@@ -3,7 +3,6 @@ import tempfile
 import streamlit as st
 
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain.chains import RetrievalQA
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import PromptTemplate
 from langchain_huggingface import HuggingFaceEndpoint
@@ -64,7 +63,7 @@ def set_custom_prompt(custom_prompt_template):
     return prompt
 
 def get_qa_chain(vectorstore):
-    """Create a RetrievalQA chain with the given vector store."""
+    """Create a QA chain with the given vector store."""
     CUSTOM_PROMPT_TEMPLATE = """
         Use the pieces of information provided in the context to answer user's question.
         If you dont know the answer,then search on your parameters and then answer.
@@ -75,18 +74,28 @@ def get_qa_chain(vectorstore):
         Start the answer directly. No small talk please.
         """
     
-    qa_chain = RetrievalQA.from_chain_type(
-        llm=ChatGroq(
-            model_name="llama-3.3-70b-versatile",
-            temperature=0.0,
-            groq_api_key=os.environ["GROQ_API_KEY"],
-        ),
-        chain_type="stuff",
-        retriever=vectorstore.as_retriever(search_kwargs={'k': 3}),
-        return_source_documents=True,
-        chain_type_kwargs={'prompt': set_custom_prompt(CUSTOM_PROMPT_TEMPLATE)}
-    )
-    return qa_chain
+    class CustomQAChain:
+        def __init__(self, vs):
+            self.llm = ChatGroq(
+                model_name="llama-3.3-70b-versatile",
+                temperature=0.0,
+                groq_api_key=os.environ["GROQ_API_KEY"],
+            )
+            self.retriever = vs.as_retriever(search_kwargs={'k': 3})
+            self.prompt = PromptTemplate(template=CUSTOM_PROMPT_TEMPLATE, input_variables=["context", "question"])
+            
+        def invoke(self, inputs):
+            query = inputs.get('query')
+            docs = self.retriever.invoke(query)
+            context = "\n\n".join(doc.page_content for doc in docs)
+            formatted_prompt = self.prompt.format(context=context, question=query)
+            response = self.llm.invoke(formatted_prompt)
+            return {
+                "result": response.content,
+                "source_documents": docs
+            }
+            
+    return CustomQAChain(vectorstore)
 
 def main():
     st.set_page_config(page_title="DocBot - PDF reader", page_icon="📚", layout="wide")
